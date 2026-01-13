@@ -1,0 +1,164 @@
+//
+//  ActivityMonitor.swift
+//  SocialMonitoring
+//
+//  Created by Alexandr Bahno on 13.01.2026.
+//
+
+import Cocoa
+import ApplicationServices
+import Carbon.HIToolbox
+import ScreenCaptureKit
+import Combine
+
+protocol ActivityManagerProtocol {
+    func startMonitoring()
+    func stopMonitoring()
+}
+
+final class ActivityManager {
+    // List of Bundle IDs
+    let socialAppBundleIDs = [
+        "ru.keepcoder.Telegram",    // Telegram
+        "com.tdesktop.Telegram",
+        "net.whatsapp.WhatsApp",    // WhatsApp
+        "com.hnc.Discord",          // Discord
+        "com.apple.iChat",          // iMessage
+        "com.viber.mac"             // Viber
+    ]
+    private var globalMonitor: Any?
+    
+    private func handleKeyPress(_ event: NSEvent) {
+        guard event.keyCode == kVK_Return else {
+            return
+        }
+        
+        let flags = event.modifierFlags
+        let isCommandPressed = flags.contains(.command)
+        let isShiftPressed = flags.contains(.shift)
+        
+        // Command + Return
+        if isCommandPressed {
+            print("Detected: Cmd + Return")
+            checkCurrentAppAndScreenshot()
+            return
+        }
+        
+        if !isCommandPressed && !isShiftPressed {
+            print("Detected: Standard Return")
+            checkCurrentAppAndScreenshot()
+            return
+        }
+    }
+    
+    private func checkCurrentAppAndScreenshot() {
+        // Get the frontmost application
+        guard let frontApp = NSWorkspace.shared.frontmostApplication,
+              let bundleID = frontApp.bundleIdentifier else { return }
+        
+        // Check if the active app is in our "Social" list
+        if socialAppBundleIDs.contains(bundleID) {
+            print("Detected Enter key in social app: \(frontApp.localizedName ?? "Unknown")")
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.takeScreenshot()
+            }
+        }
+    }
+}
+
+// MARK: - ActivityManagerProtocol
+extension ActivityManager: ActivityManagerProtocol {
+    func startMonitoring() {
+        guard globalMonitor == nil else { return }
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleKeyPress(event)
+        }
+    }
+    
+    func stopMonitoring() {
+        if let monitor = globalMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalMonitor = nil
+        }
+    }
+}
+
+// MARK: - Make screenshot
+private extension ActivityManager {
+    func takeScreenshot() {
+        Task {
+            do {
+                let focusedWindowRect: CGRect = getFocusedWindowFrame() ??
+                    .init(x: 0, y: 0, width: 400, height: 400)
+                let cgImage = try await SCScreenshotManager.captureImage(in: focusedWindowRect)
+                if let nsImage = cgImage.asNSImage() {
+                    saveImageToDesktop(nsImage)
+                }
+            } catch(let error) {
+                print(error)
+            }
+        }
+    }
+    
+    func getFocusedWindowFrame() -> CGRect? {
+        let systemWideElement = AXUIElementCreateSystemWide()
+        
+        var focusedAppRef: AnyObject?
+        let appError = AXUIElementCopyAttributeValue(systemWideElement, kAXFocusedApplicationAttribute as CFString, &focusedAppRef)
+        
+        guard appError == .success, let focusedApp = focusedAppRef else {
+            print("Error: Could not get focused application.")
+            return nil
+        }
+        let appElement = focusedApp as! AXUIElement
+        
+        var focusedWindowRef: AnyObject?
+        let windowError = AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &focusedWindowRef)
+        
+        guard windowError == .success, let focusedWindow = focusedWindowRef else {
+            print("Error: Could not get focused window (App might not have windows).")
+            return nil
+        }
+        let windowElement = focusedWindow as! AXUIElement
+        
+        var positionRef: AnyObject?
+        let posError = AXUIElementCopyAttributeValue(windowElement, kAXPositionAttribute as CFString, &positionRef)
+        
+        var position = CGPoint.zero
+        if posError == .success {
+            _ = AXValueGetValue(positionRef as! AXValue, .cgPoint, &position)
+        }
+        
+        var sizeRef: AnyObject?
+        let sizeError = AXUIElementCopyAttributeValue(windowElement, kAXSizeAttribute as CFString, &sizeRef)
+        
+        var size = CGSize.zero
+        if sizeError == .success {
+            _ = AXValueGetValue(sizeRef as! AXValue, .cgSize, &size)
+        }
+        
+        return CGRect(origin: position, size: size)
+    }
+}
+
+// MARK: - Save screenshot
+private extension ActivityManager {
+    func saveImageToDesktop(_ image: NSImage) {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmapImage = NSBitmapImageRep(data: tiffData),
+              let pngData = bitmapImage.representation(using: .png, properties: [:]) else { return }
+        
+        let fileManager = FileManager.default
+        let desktopURL = fileManager.urls(for: .desktopDirectory, in: .userDomainMask).first!
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let fileURL = desktopURL.appendingPathComponent("SocialCap_\(timestamp).png")
+        
+        do {
+            try pngData.write(to: fileURL)
+            print("Screenshot saved to: \(fileURL.path)")
+        } catch {
+            print("Failed to save screenshot: \(error)")
+        }
+    }
+}
