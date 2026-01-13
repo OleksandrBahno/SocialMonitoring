@@ -29,11 +29,11 @@ final class PermissionManager {
     }
     
     private func checkScreenRecording() -> Bool {
-        // It returns true if you have permission, false otherwise.
+        // It returns true if app has permission, false otherwise.
         if CGPreflightScreenCaptureAccess() {
             return true
         } else {
-            // If we don't have permission, we request it explicitly.
+            // If app doesn't have permission, we request it explicitly.
             CGRequestScreenCaptureAccess()
             return false
         }
